@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+uploads/
+artifacts/*/
+!artifacts/diamonds/
+!artifacts/abalone/

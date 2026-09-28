@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invariant Sentinel</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='4' width='3' height='8' fill='%23a3acb6'/%3E%3Crect x='5' y='4' width='3' height='8' fill='%232f6db3'/%3E%3Crect x='9' y='4' width='3' height='8' fill='%23c03a2b'/%3E%3Crect x='13' y='4' width='2' height='8' fill='%23a3acb6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/vendor/plotly.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wordmark">Invariant Sentinel <span id="dataset-title"></span></div>
+    <div class="dataset-pick">
+      <label for="dataset">Dataset</label>
+      <select id="dataset"></select>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Pages">
+      <button role="tab" data-page="monitor" aria-selected="true">Monitor</button>
+      <button role="tab" data-page="relationships" aria-selected="false">Relationships</button>
+      <button role="tab" data-page="evaluation" aria-selected="false">Evaluation</button>
+      <button role="tab" data-page="data" aria-selected="false">Your data</button>
+    </nav>
+  </header>
+
+  <main>
+    <div id="notice" class="notice" hidden></div>
+
+    <!-- ================= Monitor ================= -->
+    <section id="page-monitor" data-page-body>
+      <div class="runbar">
+        <div class="field grow">
+          <label for="scenario">Scenario</label>
+          <select id="scenario"></select>
+        </div>
+        <button class="btn" id="start">Start</button>
+        <span class="spacer"></span>
+        <button class="btn quiet" id="next" disabled>Next</button>
+        <button class="btn quiet" id="play" disabled>Play</button>
+        <button class="btn quiet" id="finish" disabled>Run to end</button>
+        <button class="btn quiet" id="reveal" disabled>Reveal what was injected</button>
+      </div>
+      <p class="scenario-steps" id="scenario-steps"></p>
+
+      <div class="sheet">
+        <div class="status">
+          <div class="where" id="status-where"></div>
+          <p class="headline idle" id="status-headline">Choose a scenario and press Start.</p>
+          <div id="status-tag"></div>
+        </div>
+        <div class="timeline" id="timeline" hidden>
+          <div class="lane"><div class="lane-name">Sentinel</div><div class="blocks" id="lane-sentinel"></div></div>
+          <div class="lane baseline"><div class="lane-name">Standard drift check</div><div class="blocks" id="lane-baseline"></div></div>
+          <div class="lane truth-lane" id="truth-lane" hidden><div class="lane-name">Injected</div><div class="blocks" id="lane-truth"></div></div>
+          <div class="lane"><div class="lane-name"></div><div class="ticks" id="ticks"></div></div>
+          <div class="lane errlane"><div class="lane-name">Model error<br><span class="small">known later</span></div><div class="errchart" id="err-chart"></div></div>
+          <div class="legend" id="legend"></div>
+        </div>
+        <details class="inject" id="inject" hidden>
+          <summary>Change something while it runs</summary>
+          <form id="inject-form">
+            <div class="field"><label for="inj-feature">Feature</label><select id="inj-feature"></select></div>
+            <div class="field"><label for="inj-fault">Fault</label><select id="inj-fault"></select></div>
+            <div class="field" id="inj-amount-field"><label for="inj-amount" id="inj-amount-label">Amount</label><input id="inj-amount" type="number" step="any"></div>
+            <button class="btn quiet" type="submit">Inject fault</button>
+            <span class="muted small">or</span>
+            <button class="btn quiet" type="button" id="inj-shift">Start harmless shift</button>
+          </form>
+        </details>
+      </div>
+
+      <section class="investigation" id="investigation" hidden>
+        <header>
+          <h2 id="inv-title"></h2>
+          <span class="muted small" id="inv-sub"></span>
+        </header>
+        <div class="panels">
+          <article class="sheet panel p-what">
+            <h3>What happened</h3>
+            <div class="prose" id="what"></div>
+            <div class="notes" id="notes" hidden></div>
+          </article>
+          <article class="sheet panel p-where">
+            <h3>Where</h3>
+            <p class="hint">Each arrow is a learned rule: a feature predicted from others. Red arrows stopped holding.</p>
+            <div class="map" id="map"></div>
+          </article>
+          <article class="sheet panel p-why">
+            <h3>Why this feature</h3>
+            <p class="hint" id="why-hint"></p>
+            <div id="why-body"></div>
+          </article>
+          <article class="sheet panel p-scatter">
+            <h3>Does it still agree with its neighbours?</h3>
+            <p class="hint">Points on the dashed line agree. A harmless shift slides points along it; a fault pushes them off it.</p>
+            <div id="scatter-body"></div>
+          </article>
+          <article class="sheet panel p-strength">
+            <h3>How strong</h3>
+            <p class="hint">Shift score: how far each rule's errors moved, in usual errors × √rows. Scatter: noise compared with usual (1.0 = usual).</p>
+            <div class="table-scroll" id="strength"></div>
+          </article>
+          <article class="sheet panel p-drift">
+            <h3>What a standard drift check sees</h3>
+            <p class="hint">Each feature on its own, ignoring the others (KS statistic against the reference).</p>
+            <div class="table-scroll" id="drift"></div>
+          </article>
+          <article class="sheet panel p-impact">
+            <h3>Does the model care?</h3>
+            <div id="impact"></div>
+          </article>
+          <article class="sheet panel p-check">
+            <h3>What to check</h3>
+            <div id="checks"></div>
+          </article>
+        </div>
+      </section>
+    </section>
+
+    <!-- ================= Relationships ================= -->
+    <section id="page-relationships" data-page-body hidden>
+      <div class="page-head">
+        <h1>What the system learned from healthy data</h1>
+        <p class="muted" id="rel-intro"></p>
+      </div>
+      <div class="two-col">
+        <div class="stack">
+          <article class="sheet panel">
+            <h3>Rules</h3>
+            <p class="hint">Each feature predicted from at most three others. Fit is R² on calibration data: 100% is perfect. Rules below 50% are too weak to trust and are not used.</p>
+            <ul class="rule-list" id="rule-list"></ul>
+          </article>
+          <article class="sheet panel">
+            <h3>Data kept out of the reference</h3>
+            <div id="cleaning"></div>
+          </article>
+        </div>
+        <div class="stack">
+          <article class="sheet panel">
+            <h3>Map of rules</h3>
+            <div class="map" id="rel-map"></div>
+          </article>
+          <article class="sheet panel">
+            <h3>Which faults can be told apart</h3>
+            <p class="hint">Similarity of the fingerprint each feature's fault would leave. Near 1.0 means the system cannot tell the two apart and will say so. Known before any monitoring.</p>
+            <div class="chart-frame"><div class="chart tall" id="iso-chart"></div></div>
+            <div id="iso-notes" class="small"></div>
+          </article>
+        </div>
+      </div>
+      <article class="sheet panel" style="margin-top:1rem">
+        <h3>Thresholds and where they come from</h3>
+        <p class="hint">Calibrated values are learned from healthy batches; heuristics are fixed choices, disclosed here.</p>
+        <div class="table-scroll" id="thresholds"></div>
+      </article>
+    </section>
+
+    <!-- ================= Evaluation ================= -->
+    <section id="page-evaluation" data-page-body hidden>
+      <div class="page-head">
+        <h1>Sentinel versus a standard drift check</h1>
+        <p class="muted">Every situation is simulated on 30 different batches. The standard check uses the same calibrated limits,
+          so any difference comes from the relationships, not from better thresholds. Ranges are 95% confidence intervals.</p>
+      </div>
+      <p><button class="btn" id="run-eval">Run evaluation</button> <span class="muted small" id="eval-status"></span></p>
+      <div id="eval-summary" class="prose" style="margin:1rem 0"></div>
+      <div class="sheet panel table-scroll" id="eval-table" hidden></div>
+    </section>
+
+    <!-- ================= Your data ================= -->
+    <section id="page-data" data-page-body hidden>
+      <div class="page-head">
+        <h1>Datasets</h1>
+        <p class="muted">Any CSV works if it has a numeric column to predict and at least three numeric columns that are related to each other.</p>
+      </div>
+      <article class="sheet panel"><div id="dataset-list"></div></article>
+      <article class="sheet panel" style="margin-top:1rem">
+        <h3>Add your own CSV</h3>
+        <p class="hint">At least 500 rows. Half is used to learn, a fifth to calibrate thresholds, the rest is replayed as batches.</p>
+        <input type="file" id="upload" accept=".csv,text/csv">
+        <div id="upload-form"></div>
+      </article>
+    </section>
+  </main>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

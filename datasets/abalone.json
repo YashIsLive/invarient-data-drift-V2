@@ -1,0 +1,20 @@
+{
+  "name": "abalone",
+  "title": "Abalone age model",
+  "description": "A fishery estimates each abalone's age (counted as rings in its shell) from quick measurements, instead of cutting the shell and counting rings under a microscope. Shellfish are measured 100 at a time.",
+  "csv": "datasets/abalone.csv",
+  "target": "rings",
+  "monitored": ["length", "diameter", "height", "whole_weight", "shucked_weight", "viscera_weight", "shell_weight"],
+  "context": ["sex"],
+  "time_column": null,
+  "log_features": ["length", "diameter", "height", "whole_weight", "shucked_weight", "viscera_weight", "shell_weight"],
+  "batch_size": 100,
+  "shift_driver": "whole_weight",
+  "shift_story": "a catch from a spot with larger shellfish",
+  "batch_word": "catch",
+  "labels": {"length": "Length", "diameter": "Diameter", "height": "Height", "whole_weight": "Whole weight",
+             "shucked_weight": "Meat weight", "viscera_weight": "Gut weight", "shell_weight": "Shell weight",
+             "rings": "Rings"},
+  "units": {"length": "mm", "diameter": "mm", "height": "mm", "whole_weight": "g", "shucked_weight": "g",
+            "viscera_weight": "g", "shell_weight": "g", "rings": "rings"}
+}
