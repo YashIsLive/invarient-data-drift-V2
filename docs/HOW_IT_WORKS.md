@@ -120,6 +120,34 @@ The repair is itself imperfect, so the impact is called **material** only if it 
 above what repairing produces on healthy batches (95th percentile). This needs no true prices.
 When true prices arrive later, the app shows whether the repaired inputs really give a lower error.
 
+### Which rows? (the affected-rows report)
+
+Steps 1–5 judge the batch as a whole. To act on a fault you also want the rows, so every batch gets
+a row-by-row report for the feature its verdict points at:
+
+- **Broken relationship** (or **unclear**, using the most likely candidate and saying so): for each row,
+  the recorded value next to the value its own rule expects from the row's other features, the
+  percentage difference, and the standardized residual e = (recorded − expected) / usual error.
+- **Data quality issue**: exactly the rows that broke the quality rule (missing, impossible or
+  outside the plausible range, or stuck at the frozen value).
+- **All normal / harmless shift**: no row is flagged. Nothing is suspected, so the report never
+  suggests that a harmless shift has bad rows.
+
+A row is **flagged** when |e| is above the **row limit**: the 99th percentile of |e| on the healthy
+calibration rows, calibrated per feature (diamonds: 2.4 usual errors for length, 2.9 for weight).
+So about 1 healthy row in 100 is flagged anyway, and the report always says so:
+*"153 of 200 rows flagged; about 2 expected on healthy days."*
+
+This matters for honesty. A 3% length error is many usual errors on every stone, so most rows are
+flagged. A fault near the detection limit (1.5 usual errors, as in the evaluation) moves the
+*average* of 200 rows far beyond its limit while each single row stays within normal scatter. Then
+only a few more rows than usual are flagged, and the report says the fault shows in the average,
+not in single rows, instead of pretending to have found the bad ones.
+
+**Incidents.** Consecutive batches with the same verdict and the same suspect are merged into one
+incident (start, end, suspect, estimated size, model impact, rows flagged), shown as a strip under
+the timeline. Normal batches end an incident.
+
 ### Verdict summary
 
 | Verdict | Colour | Meaning |
@@ -158,8 +186,15 @@ missing values, ×0.1 for a unit change) and are logged, so the ground truth can
 
 What to say about the weak rows:
 
-- **Depth and Depth %** are reported as unclear because their fingerprints are similar (Depth % is
-  itself computed from depth, length and width). The system does not guess; it names the candidates.
+- **Depth and Depth %** are reported as unclear because their fingerprints are similar (cosine 0.91;
+  Depth % is itself computed from depth, length and width). A fault on one is explained about
+  0.91² ≈ 83% by the other, so the runner-up stays within the 20-point margin. The system does not
+  guess; it names both.
+- **Depth % and Table %** show 1.00 on the fingerprint heatmap, yet Table % is never named for a
+  Depth % fault. Table % has no usable rule, so it appears only as an input to the Depth % rule:
+  its fingerprint lies on the same single rule as Depth %'s own. But to explain a Depth % fault,
+  Table % would have to read about 10× its normal spread off, and candidates needing more than 5×
+  are dropped as implausible (`locate.py`).
 - **Table %** has no usable rule, so Sentinel can only do what the standard check does. It says so
   ("no relationship can confirm this change is harmless").
 - **Strong shifts (1.5)** give 20% false alarms. The likely reason is that very large stones are rare
@@ -187,7 +222,11 @@ located, and the app shows this before monitoring starts.
 - **Simulated faults are idealised**: clean start, exact formulas. Real faults are messier.
 - **"Root cause" means statistical localisation**: the feature whose single fault best explains the
   pattern, not proven causation.
-- **After a genuine permanent change** the profile must be rebuilt (Your data → Rebuild).
+- **After a genuine permanent change** the profile must be rebuilt (Your data → Rebuild). A new
+  scikit-learn version is not such a change: only the price model is retrained, because the rules,
+  thresholds and evaluation do not depend on it.
+- **Row flags are evidence, not proof.** A flagged row disagrees with its neighbours more than 99%
+  of healthy rows do; about 1 healthy row in 100 is flagged too.
 
 ## 7. Likely viva questions
 
@@ -232,11 +271,24 @@ That is why we report the share of unfamiliar rows and show the model's real err
 project the observed pattern v onto it: d_j = S_j·v / S_j·S_j, then E_j = 1 − |v − d_j S_j|² / |v|².
 The feature with the highest E_j is the suspect if E ≥ 0.7 and it beats the runner-up by 0.2.
 
-**Why does Depth come out unclear?** Its fingerprint is 91% similar to Depth %'s, because Depth % is
-computed from depth. The app shows this on the Relationships page before monitoring starts.
+**Why does Depth come out unclear?** Its fingerprint has cosine 0.91 with Depth %'s, because Depth % is
+computed from depth. A fault on one is then explained about 0.91² ≈ 83% by the other, less than 20
+points behind, so the system names both. The app shows the similarity on the Relationships page
+before monitoring starts.
+
+**Your heatmap says Depth % and Table % are 1.00. Why is Table % never blamed?** Table % has no usable
+rule, so its fingerprint lies on the Depth % rule alone, which is the same direction as Depth %'s own.
+The heatmap only compares directions. The fault size also matters: Table % would need to be off by
+about 10× its normal spread to explain a Depth % fault, and candidates needing more than 5× are dropped
+as implausible.
 
 **What if two faults happen at once?** No single fingerprint fits, so the verdict is unclear rather
 than a confident wrong answer.
+
+**Can it tell me which rows are wrong?** For a data quality issue, exactly. For a broken
+relationship, it lists every row's recorded and expected value, flags rows beyond a calibrated
+limit, and says how many would be flagged on a healthy day. A large fault flags most rows; a fault
+near the detection limit is visible only in the average, and the report says that too.
 
 **What can it not detect?** Faults that shift every feature together, faults on features without a
 usable rule, and faults smaller than the rules' normal error.
@@ -279,3 +331,4 @@ All thresholds are shown in the app (Relationships page) with their source.
 | Suspect explains at least / beats runner-up by | 70% / 20 points | heuristic |
 | Same fingerprint above | 0.95 cosine | heuristic |
 | Material impact | 0.25 and above healthy 95th percentile | heuristic + calibrated |
+| Row limit (affected-rows report) | 99th percentile of \|residual\| on healthy calibration rows, per feature | calibrated |

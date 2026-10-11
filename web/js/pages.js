@@ -62,7 +62,12 @@ export function renderRelationships(p) {
   $("iso-notes").innerHTML = notes.length ? `<p>Known limits for this dataset:</p><ul>${notes.map((n) => `<li>${n}</li>`).join("")}</ul>`
     : "<p>Every feature leaves a distinct fingerprint.</p>";
 
+  const labelOf = Object.fromEntries(p.features.map((f) => [f.name, f.label]));
   const tr = Object.entries(p.thresholds).map(([k, t]) => {
+    if (k === "row_limit") {   // one calibrated limit per feature with a rule
+      const per = Object.entries(t.value).map(([f, v]) => `${esc(labelOf[f] || f)} ${num(v, 2)}`).join(" · ");
+      return `<tr><td>${esc(t.meaning)}</td><td class="num" style="text-align:left">${per || "–"}</td><td>${esc(t.source)}</td></tr>`;
+    }
     const v = k.endsWith("share") || k === "min_r2" || k === "explained_min" || k === "margin_min" || k === "ks_percentile"
       ? (k === "ks_percentile" ? `${(t.value * 100).toFixed(2)}th pct` : pct(t.value)) : num(t.value, 2);
     return `<tr><td>${esc(t.meaning)}</td><td class="num">${v}</td><td>${esc(t.source)}</td></tr>`;

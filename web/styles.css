@@ -132,6 +132,17 @@ select, input[type="number"], input[type="text"] {
   position: absolute; top: 0.2rem; height: 0.9rem; border-left: 2px solid var(--ink); border-bottom: 2px solid var(--ink);
   font-size: 0.72rem; line-height: 0.85rem; padding-left: 0.3rem; white-space: nowrap; overflow: hidden; color: var(--ink);
 }
+.incident-lane .blocks { height: 1.5rem; position: relative; display: block; }
+.incident {
+  position: absolute; top: 0.15rem; height: 1.2rem; border: 0; border-radius: 2px; padding: 0 0.35rem;
+  font: 600 0.72rem/1.2rem var(--sans); color: #fff; text-align: left; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; cursor: pointer; background: var(--v-normal);
+}
+.incident[data-v="shift"] { background: var(--v-shift); }
+.incident[data-v="quality"] { background: var(--v-quality); }
+.incident[data-v="broken"] { background: var(--v-broken); }
+.incident[data-v="unclear"] { background: var(--v-unclear); color: var(--ink); }
+.incident[data-v="insufficient"] { background: var(--v-insufficient); color: var(--ink); }
 .legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0.75rem 0 0 9.25rem; font-size: var(--step--1); color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
 .legend i { width: 0.7rem; height: 0.7rem; border-radius: 2px; display: inline-block; }
@@ -151,14 +162,14 @@ select, input[type="number"], input[type="text"] {
 .panels {
   display: grid; gap: 1rem;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  grid-template-areas: "what where" "why scatter" "strength drift" "impact check";
+  grid-template-areas: "what where" "why scatter" "rows rows" "strength drift" "impact check";
 }
 .panel { padding: 1rem 1.1rem 1.1rem; min-width: 0; }
 .panel > h3 { margin-bottom: 0.15rem; }
 .panel > .hint { font-size: var(--step--1); color: var(--muted); margin-bottom: 0.6rem; }
 .p-what { grid-area: what; } .p-where { grid-area: where; } .p-why { grid-area: why; }
 .p-scatter { grid-area: scatter; } .p-strength { grid-area: strength; } .p-drift { grid-area: drift; }
-.p-impact { grid-area: impact; } .p-check { grid-area: check; }
+.p-impact { grid-area: impact; } .p-check { grid-area: check; } .p-rows { grid-area: rows; }
 .prose { font-family: var(--serif); font-size: 1.02rem; line-height: 1.6; max-width: 68ch; }
 .prose p { margin-bottom: 0.7em; }
 .notes { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px dashed var(--rule); font-size: var(--step--1); color: var(--muted); }
@@ -179,6 +190,18 @@ table.data td.num, table.data th.num { text-align: right; white-space: nowrap; }
 .state.off i { background: transparent; border: 1px solid var(--muted); }
 .table-scroll { overflow-x: auto; }
 
+/* affected rows */
+.rows-summary { font-family: var(--serif); font-size: 1.02rem; margin-bottom: 0.5rem; max-width: 80ch; }
+.rows-tools { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; font-size: var(--step--1); margin-bottom: 0.4rem; }
+.rows-scroll { max-height: 22rem; overflow: auto; border-top: 1px solid var(--rule-soft); }
+.rows-table th { position: sticky; top: 0; background: var(--sheet); }
+.rows-table th button { all: unset; cursor: pointer; }
+.rows-table th button:focus-visible { outline: 2px solid var(--focus); }
+.rows-table th[aria-sort] button::after { content: " ▾"; }
+.rows-table th[aria-sort="ascending"] button::after { content: " ▴"; }
+.rows-table tr.flagged td { background: #fbefed; }
+.rows-table tr.flagged td:first-child { box-shadow: inset 3px 0 0 var(--v-broken); }
+
 .segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; margin-bottom: 0.4rem; }
 .segmented button { border: 0; background: var(--sheet); padding: 0.2rem 0.6rem; font-size: var(--step--1); cursor: pointer; color: var(--muted); }
 .segmented button + button { border-left: 1px solid var(--rule); }
@@ -192,7 +215,7 @@ table.data td.num, table.data th.num { text-align: right; white-space: nowrap; }
   position: absolute; top: 38px; right: 16px; z-index: 5; font-size: 0.75rem; padding: 0.15rem 0.5rem;
   border: 1px solid var(--ink); background: var(--sheet); color: var(--ink); border-radius: 3px; cursor: pointer;
 }
-.map svg { width: 100%; height: auto; display: block; }
+.map svg { width: 100%; max-width: 34rem; height: auto; display: block; margin: 0 auto; }
 
 /* ---------- other pages ---------- */
 .page-head { margin-bottom: 1rem; max-width: 70ch; }
@@ -230,7 +253,7 @@ table.data td.num, table.data th.num { text-align: right; white-space: nowrap; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 900px) {
-  .panels { grid-template-columns: 1fr; grid-template-areas: "what" "where" "why" "scatter" "strength" "drift" "impact" "check"; }
+  .panels { grid-template-columns: 1fr; grid-template-areas: "what" "where" "why" "scatter" "rows" "strength" "drift" "impact" "check"; }
   .two-col { grid-template-columns: 1fr; }
   .lane { grid-template-columns: 5.5rem 1fr; }
   .legend { margin-left: 0; }

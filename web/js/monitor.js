@@ -21,6 +21,10 @@ const state = {
   cache: new Map(),   // batch index -> full evidence
   candidate: 0,       // which candidate the fingerprint chart shows
   scatterFeature: null,
+  rows: new Map(),    // batch index -> affected-rows report
+  rowsSort: null,     // { key, dir } chosen by the user; null = default order
+  onlyFlagged: true,
+  incidents: null,
 };
 
 let notify = () => {};
@@ -78,6 +82,9 @@ function resetView() {
   state.follow = true;
   state.truth = null;
   state.cache.clear();
+  state.rows.clear();
+  state.incidents = null;
+  $("incident-lane").hidden = true;
   $("timeline").hidden = true;
   $("inject").hidden = true;
   $("investigation").hidden = true;
@@ -125,6 +132,7 @@ async function advance(count) {
   }
   renderTimeline();
   updateButtons();
+  loadIncidents();
   if (state.follow) await select(state.run.done - 1, { follow: true });
   if (state.run.finished) stopPlaying();
 }
@@ -199,6 +207,7 @@ function renderTimeline() {
   $("lane-sentinel").querySelectorAll("button[data-i]").forEach((el) =>
     el.addEventListener("click", () => select(Number(el.dataset.i))));
   if (state.truth) renderTruth();
+  if (state.incidents) renderIncidents();
   renderErrorChart();
 }
 
@@ -256,6 +265,46 @@ function renderTruth() {
   }).join("");
 }
 
+// ---------- incidents ----------
+
+async function loadIncidents() {
+  const id = state.run.id;
+  let res;
+  try {
+    res = await api(`/runs/${id}/incidents`);
+  } catch { return; }   // the timeline itself is still correct; the strip is a summary
+  if (state.run?.id !== id) return;
+  state.incidents = res.incidents;
+  renderIncidents();
+}
+
+function incidentText(inc) {
+  const word = capital(state.run.batch_word);
+  const span = inc.start === inc.end ? `${word} ${inc.start + 1}` : `${word}s ${inc.start + 1}–${inc.end + 1}`;
+  const what = inc.verdict === "shift" ? "Harmless shift"
+    : inc.label ? `${inc.label}${inc.size_text ? ` ${inc.size_text}` : ""}` : LEGEND.find(([v]) => v === inc.verdict)?.[1];
+  const rows = inc.verdict === "shift" || inc.verdict === "insufficient" ? ""
+    : ` · ${inc.rows_flagged.toLocaleString()} of ${inc.rows.toLocaleString()} rows flagged (about ${Math.round(inc.rows_expected)} expected)`;
+  const impact = inc.impact === null ? "" : ` · model impact ${num(inc.impact, 2)}× usual error (${inc.material ? "material" : "low"})`;
+  return { span, what, full: `${span}: ${what}${rows}${impact}` };
+}
+
+function renderIncidents() {
+  const n = state.run.batches;
+  const lane = $("lane-incidents");
+  $("incident-lane").hidden = !state.incidents.length;
+  lane.innerHTML = state.incidents.map((inc, k) => {
+    const t = incidentText(inc);
+    const left = (inc.start / n) * 100, width = ((inc.end - inc.start + 1) / n) * 100;
+    const short = inc.verdict === "shift" ? "Harmless shift"
+      : `${inc.label || t.what}${inc.verdict === "insufficient" ? "" : ` · ${inc.rows_flagged.toLocaleString()} of ${inc.rows.toLocaleString()} rows flagged`}`;
+    return `<button type="button" class="incident" data-v="${inc.verdict}" data-k="${k}"
+      style="left:calc(${left}% + 1px);width:calc(${width}% - 2px)" title="${esc(t.full)}" aria-label="${esc(t.full)}">${esc(short)}</button>`;
+  }).join("");
+  lane.querySelectorAll(".incident").forEach((b) =>
+    b.addEventListener("click", () => select(state.incidents[Number(b.dataset.k)].start)));
+}
+
 // ---------- selecting a batch ----------
 
 async function select(i, { follow = false } = {}) {
@@ -279,6 +328,7 @@ async function select(i, { follow = false } = {}) {
   state.candidate = 0;
   renderStatus(ev);
   renderInvestigation(ev, keepFeature);
+  loadRows(i);
 }
 
 function renderStatus(ev) {
@@ -383,14 +433,15 @@ function renderWhy(ev) {
   drawChart(document.getElementById("why-chart"), [
     { type: "bar", x: names, y: loc.observed, name: "Observed", marker: { color: COLORS.ink2 },
       hovertemplate: "%{x}<br>observed %{y:.3~r}<extra></extra>" },
-    { type: "bar", x: names, y: c.expected, name: `If ${c.label} were at fault`,
+    { type: "bar", x: names, y: c.expected, name: `Fault on ${c.label}`,
       marker: { color: "rgba(0,0,0,0)", line: { color: colour, width: 2.5 } },
       hovertemplate: "%{x}<br>expected %{y:.3~r}<extra></extra>" },
   ], {
     barmode: "group", bargap: 0.35,
     yaxis: { title: { text: spread ? "extra noise" : "shift in errors", font: { size: 12 } }, zeroline: true, zerolinecolor: COLORS.muted },
     xaxis: { tickfont: { size: 11 }, tickangle: 0 },
-    margin: { b: 64 },
+    // the legend sits in the top margin; leave it room so it never covers the tallest bar
+    margin: { b: 64, t: 46 }, legend: { y: 1.04 },
   });
 }
 
@@ -491,9 +542,16 @@ function renderDrift(ev) {
     ? `<p class="small muted">Left out (invalid data): ${ev.masked.map((m) => esc(state.profile.features.find((f) => f.name === m)?.label || m)).join(", ")}.</p>` : "";
   const b = ev.baseline;
   const label = (n) => state.profile.features.find((f) => f.name === n)?.label || n;
+  const moved = b.moved.map((m) => esc(label(m)));
+  const list = moved.length > 1 ? `${moved.slice(0, -1).join(", ")} and ${moved.at(-1)}` : moved[0];
+  const one = moved.length === 1;
+  const blame = one ? `It would blame <strong>${esc(label(b.blamed))}</strong>`
+    : `It would blame <strong>${esc(label(b.blamed))}</strong>, the one furthest past its limit`;
   const verdict = b.alarm
-    ? `The standard check would raise an alarm on ${b.moved.length} feature(s) and blame <strong>${esc(label(b.blamed))}</strong>.`
-    : "The standard check would stay quiet.";
+    ? `A standard drift check alone would raise an alarm here, because ${list} ${one ? "has" : "have"} moved beyond
+      ${one ? "its limit" : "their limits"}. ${blame}, but it looks at each feature on its own, so it cannot tell a
+      harmless change from a fault.`
+    : "A standard drift check alone would stay quiet: no feature moved beyond its limit.";
   $("drift").innerHTML = `<table class="data"><thead><tr><th>Feature</th><th class="num">Usual median</th><th class="num">Now</th>
     <th class="num">KS</th><th class="num">Limit</th><th>State</th></tr></thead><tbody>${rows}</tbody></table>
     ${masked}<p class="small" style="margin-top:.5rem">${verdict}</p>`;
@@ -526,8 +584,8 @@ function renderImpact(ev) {
   const x = order.map((_, k) => k + 1);
   drawChart($("impact-chart"), [
     { x, y: pick(s.actual), mode: "lines", name: "True value", line: { color: COLORS.muted, width: 1.5 } },
-    { x, y: pick(s.raw), mode: "markers", name: "Predicted from recorded data", marker: { color: COLORS[ev.verdict], size: 5 } },
-    { x, y: pick(s.repaired), mode: "markers", name: "Predicted after repair", marker: { color: COLORS.ink, size: 5, symbol: "circle-open" } },
+    { x, y: pick(s.raw), mode: "markers", name: "Predicted (as recorded)", marker: { color: COLORS[ev.verdict], size: 5 } },
+    { x, y: pick(s.repaired), mode: "markers", name: "Predicted (repaired)", marker: { color: COLORS.ink, size: 5, symbol: "circle-open" } },
   ], {
     xaxis: { title: { text: `rows of this ${state.run.batch_word}, sorted by true value`, font: { size: 12 } } },
     yaxis: { title: { text: `${target}${unit ? ` (${unit})` : ""}`, font: { size: 12 } } },
@@ -540,6 +598,71 @@ function renderChecks(ev) {
     : `<p class="empty-panel">Nothing to check.</p>`;
   const mind = ev.change_mind ? `<p class="change-mind"><strong>What would change this conclusion:</strong> ${esc(ev.change_mind)}</p>` : "";
   $("checks").innerHTML = list + mind;
+}
+
+// ---------- affected rows ----------
+
+async function loadRows(i) {
+  let rep = state.rows.get(i);
+  if (!rep) {
+    $("rows").innerHTML = `<p class="empty-panel busy">Checking rows…</p>`;
+    try {
+      rep = await api(`/runs/${state.run.id}/batches/${i}/rows`);
+    } catch (e) {
+      $("rows").innerHTML = `<p class="empty-panel">${esc(e.message)}</p>`;
+      return;
+    }
+    state.rows.set(i, rep);
+  }
+  if (state.selected === i) renderRows(rep, i);
+}
+
+const ROW_COLUMNS = [
+  ["row", "Row"], ["recorded", "Recorded"], ["expected", "Expected"], ["percent_off", "% off"],
+  ["standardized_residual", "Usual errors off"], ["flagged", "Flagged"],
+];
+
+function renderRows(rep, i) {
+  const el = $("rows");
+  const summary = `<p class="rows-summary">${esc(rep.summary)}</p>`;
+  if (!rep.rows.length) {
+    el.innerHTML = summary;
+    return;
+  }
+  const unit = rep.unit ? (rep.unit === "%" ? " (%)" : ` (${esc(rep.unit)})`) : "";
+  // default: the most suspicious rows first when something is flagged, otherwise row order
+  const sort = state.rowsSort || (rep.n_flagged ? { key: "standardized_residual", dir: "desc" } : { key: "row", dir: "asc" });
+  const value = (r) => sort.key === "standardized_residual" || sort.key === "percent_off"
+    ? Math.abs(r[sort.key] ?? -Infinity) : sort.key === "flagged" ? Number(r.flagged) : r[sort.key] ?? -Infinity;
+  const only = state.onlyFlagged && rep.n_flagged > 0 && rep.n_flagged < rep.rows.length;
+  const rows = rep.rows.filter((r) => !only || r.flagged)
+    .sort((a, b) => (value(a) - value(b)) * (sort.dir === "asc" ? 1 : -1) || a.row - b.row);
+  const sign = (v, d) => v === null ? "–" : `${v > 0 ? "+" : ""}${num(v, d)}`;
+  const head = ROW_COLUMNS.map(([k, t]) => {
+    const label = k === "recorded" || k === "expected" ? `${t}${unit}` : t;
+    const aria = sort.key === k ? ` aria-sort="${sort.dir === "asc" ? "ascending" : "descending"}"` : "";
+    return `<th class="${k === "flagged" ? "" : "num"}"${aria}><button type="button" data-k="${k}">${label}</button></th>`;
+  }).join("");
+  const body = rows.map((r) => `<tr class="${r.flagged ? "flagged" : ""}"><td class="num">${r.row}</td>
+    <td class="num">${num(r.recorded, 3)}</td><td class="num">${num(r.expected, 3)}</td>
+    <td class="num">${sign(r.percent_off, 1)}</td><td class="num">${sign(r.standardized_residual, 1)}</td>
+    <td>${r.flagged ? stateCell("bad", "flagged") : ""}</td></tr>`).join("");
+  const limit = rep.limit !== null ? `Row limit: ${num(rep.limit, 1)} usual errors (calibrated on healthy rows).` : "";
+  el.innerHTML = `${summary}
+    <div class="rows-tools">
+      ${rep.n_flagged > 0 && rep.n_flagged < rep.rows.length
+        ? `<label><input type="checkbox" id="rows-only"${state.onlyFlagged ? " checked" : ""}> Only flagged rows</label>` : ""}
+      <a href="/api/runs/${esc(state.run.id)}/batches/${i}/rows?format=csv" download>Download CSV (all ${rep.rows.length} rows)</a>
+      <span class="muted">${limit}</span>
+    </div>
+    <div class="rows-scroll"><table class="data rows-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  $("rows-only")?.addEventListener("change", (e) => { state.onlyFlagged = e.target.checked; renderRows(rep, i); });
+  el.querySelectorAll("th button").forEach((b) => b.addEventListener("click", () => {
+    const k = b.dataset.k;
+    const dir = sort.key === k ? (sort.dir === "asc" ? "desc" : "asc") : (k === "row" ? "asc" : "desc");
+    state.rowsSort = { key: k, dir };
+    renderRows(rep, i);
+  }));
 }
 
 // ---------- live injection ----------

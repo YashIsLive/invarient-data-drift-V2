@@ -13,8 +13,9 @@ from sentinel.checks import ks_stat
 from sentinel.config import DatasetConfig
 from sentinel.diagnose import analyse
 from sentinel.evaluate import wilson
-from sentinel.profile import build_profile, load_profile
+from sentinel.profile import build_profile, load_profile, save_profile
 from sentinel.relationships import isolability, learn, signature_matrix
+from sentinel.rows import flag_rows, merge_incidents
 from sentinel.scenarios import Event, apply_fault, make_batch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -154,6 +155,100 @@ def test_same_seed_gives_same_profile(tmp_path):
     p1 = build_profile(cfg, tmp_path, log=lambda *_: None)
     p2 = build_profile(cfg, tmp_path, log=lambda *_: None)
     assert p1.thresholds["z_limit"]["value"] == pytest.approx(p2.thresholds["z_limit"]["value"])
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_other_sklearn_version_retrains_only_the_model(tmp_path):
+    synthetic(n=3000).to_csv(tmp_path / "data.csv", index=False)
+    cfg = DatasetConfig(name="s", title="S", csv="data.csv", target="y", monitored=["a", "b", "c", "d"],
+                        batch_size=100, shift_driver="a")
+    p = build_profile(cfg, tmp_path, log=lambda *_: None)
+    p.extra["sklearn"] = "0.0"          # pretend it was saved by another scikit-learn version
+    save_profile(p, tmp_path / "art")
+    import joblib
+    stale = joblib.load(tmp_path / "art" / "profile.joblib")
+    stale.extra["sklearn"] = "0.0"
+    joblib.dump(stale, tmp_path / "art" / "profile.joblib")
+    assert load_profile(tmp_path / "art") is None            # without the data it cannot retrain
+    q = load_profile(tmp_path / "art", root=tmp_path)
+    assert q is not None and q.model.model is not None and "retrain_seconds" in q.extra
+    assert q.thresholds == p.thresholds and [r.coefs for r in q.rels] == [r.coefs for r in p.rels]
+    assert q.mae_ref == pytest.approx(p.mae_ref)
+    assert load_profile(tmp_path / "art") is not None          # saved again under the current version
+
+
+# ---------- affected rows and incidents ----------
+
+def test_quality_verdict_flags_exactly_the_bad_rows(profile):
+    raw = make_batch(profile, 0, [Event("fault", 0, feature="c", fault="missing", amount=60)], seed=8)
+    ev = analyse(profile, raw, 0)
+    assert ev["verdict"] == "quality"
+    rep = flag_rows(profile, raw, ev)
+    flagged = {r["row"] - 1 for r in rep["rows"] if r["flagged"]}
+    assert rep["feature"] == "c" and flagged == set(np.flatnonzero(raw["c"].isna()))
+    assert rep["summary"].startswith(f"{len(flagged)} of {len(raw)} rows flagged")
+
+    raw = make_batch(profile, 0, [Event("fault", 0, feature="a", fault="unit", amount=0.1)], seed=8)
+    ev = analyse(profile, raw, 0)
+    rep = flag_rows(profile, raw, ev)
+    lo, hi = profile.plausible["a"]
+    outside = set(np.flatnonzero((raw["a"] < lo) | (raw["a"] > hi)))
+    assert {r["row"] - 1 for r in rep["rows"] if r["flagged"]} == outside and len(outside) > 0.9 * len(raw)
+
+
+def test_calibrated_row_limit_flags_about_one_percent_of_healthy_rows(profile):
+    assert profile.thresholds["row_limit"]["source"].startswith("Calibrated")
+    for f in profile.thresholds["row_limit"]["value"]:
+        flagged = rows = 0
+        for k in range(15):
+            raw = make_batch(profile, k, [], seed=9)
+            rep = flag_rows(profile, raw, analyse(profile, raw, k, detail=False), feature=f)
+            flagged, rows = flagged + rep["n_flagged"], rows + rep["n_rows"]
+        assert 0.002 <= flagged / rows <= 0.03, (f, flagged / rows)
+
+
+def test_harmless_shift_gives_no_excess_flags(profile):
+    events = [Event("shift", 0, strength=1.0)]
+    for k in range(5):
+        raw = make_batch(profile, k, events, seed=10)
+        ev = analyse(profile, raw, k)
+        if ev["verdict"] == "shift":   # the verdict itself never singles out a row
+            rep = flag_rows(profile, raw, ev)
+            assert rep["n_flagged"] == 0 and not rep["rows"]
+    for f in profile.thresholds["row_limit"]["value"]:   # and no rule sees more odd rows than on a healthy day
+        flagged = expected = 0
+        for k in range(10):
+            raw = make_batch(profile, k, events, seed=10)
+            rep = flag_rows(profile, raw, analyse(profile, raw, k, detail=False), feature=f)
+            flagged, expected = flagged + rep["n_flagged"], expected + rep["expected"]
+        assert flagged <= 3 * expected + 5, (f, flagged, expected)
+
+
+def test_real_fault_flags_many_rows(profile):
+    size = 6 * next(r for r in profile.usable if r.target == "b").sigma
+    raw = make_batch(profile, 0, [Event("fault", 0, feature="b", fault="offset", amount=size)], seed=11)
+    ev = analyse(profile, raw, 0)
+    rep = flag_rows(profile, raw, ev)
+    assert ev["verdict"] == "broken" and rep["feature"] == "b"
+    assert rep["n_flagged"] > 10 * rep["expected"]
+
+
+def test_incidents_merge_consecutive_batches_with_same_verdict_and_suspect():
+    def day(i, verdict, suspect=None, flagged=0, impact=None):
+        return {"index": i, "verdict": verdict, "suspect": suspect, "delta": 0.03 if suspect else None,
+                "mode": "shift" if suspect else None, "issue": None, "impact": impact,
+                "material": None if impact is None else impact > 0.25,
+                "n_flagged": flagged, "n_rows": 100, "expected": 1.0}
+    days = [day(0, "normal"), day(1, "shift"), day(2, "shift"), day(3, "broken", "x", 80, 0.5),
+            day(4, "broken", "x", 90, 0.7), day(5, "broken", "y", 70, 0.1), day(6, "normal"),
+            day(7, "broken", "y", 60, 0.2)]
+    inc = merge_incidents(days)
+    assert [(i["start"], i["end"], i["verdict"], i["suspect"]) for i in inc] == [
+        (1, 2, "shift", None), (3, 4, "broken", "x"), (5, 5, "broken", "y"), (7, 7, "broken", "y")]
+    x = inc[1]
+    assert x["rows_flagged"] == 170 and x["rows"] == 200 and x["rows_expected"] == 2.0
+    assert x["impact"] == pytest.approx(0.6) and x["material"] is True and x["batches"] == 2
+    assert inc[0]["impact"] is None and inc[0]["rows_flagged"] == 0
 
 
 # ---------- the shipped example datasets ----------

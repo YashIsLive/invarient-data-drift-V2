@@ -53,6 +53,7 @@
           <div class="lane baseline"><div class="lane-name">Standard drift check</div><div class="blocks" id="lane-baseline"></div></div>
           <div class="lane truth-lane" id="truth-lane" hidden><div class="lane-name">Injected</div><div class="blocks" id="lane-truth"></div></div>
           <div class="lane"><div class="lane-name"></div><div class="ticks" id="ticks"></div></div>
+          <div class="lane incident-lane" id="incident-lane" hidden><div class="lane-name">Incidents</div><div class="blocks" id="lane-incidents"></div></div>
           <div class="lane errlane"><div class="lane-name">Model error<br><span class="small">known later</span></div><div class="errchart" id="err-chart"></div></div>
           <div class="legend" id="legend"></div>
         </div>
@@ -94,6 +95,11 @@
             <h3>Does it still agree with its neighbours?</h3>
             <p class="hint">Points on the dashed line agree. A harmless shift slides points along it; a fault pushes them off it.</p>
             <div id="scatter-body"></div>
+          </article>
+          <article class="sheet panel p-rows">
+            <h3>Affected rows</h3>
+            <p class="hint">Each row's recorded value next to what its other features say it should be. A row is flagged when it is further off than about 1 healthy row in 100.</p>
+            <div id="rows"></div>
           </article>
           <article class="sheet panel p-strength">
             <h3>How strong</h3>

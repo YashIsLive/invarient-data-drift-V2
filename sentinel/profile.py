@@ -13,6 +13,7 @@ never rely on textbook p-values, which assume independent rows.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +29,8 @@ from .impact import impact_ratio
 from .model import TargetModel
 from .relationships import isolability, learn, signature_matrix
 
-VERSION = 4
+VERSION = 5
+LOG = logging.getLogger("sentinel")
 
 
 @dataclass
@@ -56,6 +58,7 @@ class Profile:
     cloud: pd.DataFrame
     build_seconds: float = 0.0
     version: int = VERSION
+    quality_rates: dict = field(default_factory=dict)  # feature -> share of healthy raw rows missing / invalid
     extra: dict = field(default_factory=dict)
 
     @property
@@ -178,6 +181,32 @@ def build_profile(cfg: DatasetConfig, root: Path, seed: int = 42, log=print) -> 
                             "meaning": "Impact counts as material above this and above the healthy 95th percentile"},
     }
 
+    # Per-row limit for the affected-rows report: how far off (in usual errors) a single healthy row gets.
+    # Computed from every clean calibration row, without the random generator, so all other
+    # thresholds stay exactly as they were.
+    row_limit, row_rate = {}, {}
+    for r in p.usable:
+        e = np.abs(r.residual(Tca))
+        e = e[np.isfinite(e)]
+        if len(e):
+            row_limit[r.target] = float(np.quantile(e, 0.99))
+            row_rate[r.target] = float(np.mean(e > row_limit[r.target]))
+    thresholds["row_limit"] = {
+        "value": row_limit, "healthy_rate": row_rate, "source": "Calibrated (99th percentile of healthy rows)",
+        "meaning": "A single row is flagged when it is further than this from what its neighbours predict "
+                   "(in usual errors, per feature), so about 1 healthy row in 100 is flagged"}
+
+    # how often healthy raw rows are missing or invalid, so quality flags can be compared with a normal day
+    raw_calib = parts["calib"]
+    T_raw = to_space(raw_calib, cfg)
+    quality_rates = {}
+    for c in features:
+        v = pd.to_numeric(raw_calib[c], errors="coerce")
+        t = T_raw[c].to_numpy(dtype=float)
+        lo, hi = plausible[c]
+        invalid = (v.notna().to_numpy() & ~np.isfinite(t)) | (np.isfinite(t) & ((t < lo) | (t > hi)))
+        quality_rates[c] = {"missing": float(v.isna().mean()), "out_of_range": float(invalid.mean())}
+
     # standardized driver values of the stream, used to simulate a harmless shift
     Tst = to_space(parts["stream"], cfg)
     d = Tst[cfg.driver].to_numpy(dtype=float)
@@ -189,6 +218,8 @@ def build_profile(cfg: DatasetConfig, root: Path, seed: int = 42, log=print) -> 
     p.cleaning = {"train": rep_train, "calib": rep_calib}
     p.sizes = {k2: int(len(v)) for k2, v in parts.items()}
     p.driver_z, p.cloud = driver_z, cloud
+    p.quality_rates = quality_rates
+    p.extra["seed"] = seed
     p.build_seconds = round(time.time() - t0, 1)
     log(f"Profile ready in {p.build_seconds}s")
     return p
@@ -204,25 +235,73 @@ def _unfamiliar_share(p: Profile, T: pd.DataFrame) -> float:
 
 
 def save_profile(p: Profile, folder: Path) -> None:
+    """Two files: profile.joblib holds only numbers, tables and plain Python objects, so it loads under
+    any scikit-learn version; model.joblib holds the scikit-learn model, the one version-sensitive part."""
     import sklearn
     folder.mkdir(parents=True, exist_ok=True)
     p.extra["sklearn"] = sklearn.__version__
-    joblib.dump(p, folder / "profile.joblib")
+    p.extra.pop("needs_model", None)
+    fitted = p.model.model
+    p.model.model = None
+    try:
+        joblib.dump(p, folder / "profile.joblib")
+    finally:
+        p.model.model = fitted
+    joblib.dump(fitted, folder / "model.joblib")
 
 
-def load_profile(folder: Path) -> Profile | None:
+def load_profile(folder: Path, root: Path | None = None) -> Profile | None:
+    """None if there is no usable profile (missing, unreadable, or from an older code version).
+
+    A profile saved under another scikit-learn version keeps its rules, thresholds and evaluation;
+    only the model is retrained (seconds, not a full rebuild). That needs `root` to find the CSV;
+    without it such a profile counts as missing."""
     path = folder / "profile.joblib"
     if not path.exists():
         return None
     import warnings
     import sklearn
+    t0 = time.perf_counter()
     try:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # a model saved by another scikit-learn version is rebuilt below
+            warnings.simplefilter("ignore")  # an old single-file profile may carry a model from another version
             p = joblib.load(path)
     except Exception:
         return None
-    # a profile from an older code version or another scikit-learn version is rebuilt (takes seconds)
-    if getattr(p, "version", 0) != VERSION or p.extra.get("sklearn") != sklearn.__version__:
+    if getattr(p, "version", 0) != VERSION:
         return None
+    same_sklearn = p.extra.get("sklearn") == sklearn.__version__
+    if p.model.model is None:  # current layout: the model sits in its own file
+        model_path = folder / "model.joblib"
+        if same_sklearn and model_path.exists():
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    p.model.model = joblib.load(model_path)
+            except Exception:
+                pass
+    elif not same_sklearn:
+        p.model.model = None   # old single-file layout, model from another version: do not trust it
+    LOG.info("Loaded profile %s in %.2fs", p.cfg.name, time.perf_counter() - t0)
+    if p.model.model is None:
+        if root is None:
+            return None
+        retrain_model(p, root)
+        save_profile(p, folder)
+    return p
+
+
+def retrain_model(p: Profile, root: Path) -> Profile:
+    """Refit only the model, on exactly the same training rows as the original build.
+    Rules, thresholds and the cached evaluation do not depend on the model and are kept."""
+    t0 = time.perf_counter()
+    cfg = p.cfg
+    parts = split(load_frame(cfg, root), cfg, p.extra.get("seed", 42))
+    train, _ = clean_reference(parts["train"], cfg)
+    calib, _ = clean_reference(parts["calib"], cfg)
+    p.model = TargetModel(cfg).fit(train)
+    p.mae_ref = float(np.mean(np.abs(p.model.predict(calib) - calib[cfg.target].to_numpy(dtype=float))))
+    p.extra["retrain_seconds"] = round(time.perf_counter() - t0, 1)
+    LOG.info("Retrained the model for %s (scikit-learn version changed) in %.1fs",
+             cfg.name, time.perf_counter() - t0)
     return p

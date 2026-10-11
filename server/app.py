@@ -3,15 +3,19 @@ this file only stores runs in memory and turns results into JSON."""
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,6 +24,7 @@ from sentinel.data import read_table
 from sentinel.diagnose import analyse
 from sentinel.evaluate import run_suite
 from sentinel.profile import build_profile, load_profile, save_profile
+from sentinel.rows import day_summary, describe_incidents, flag_rows, merge_incidents, to_csv
 from sentinel.scenarios import FAULTS, Event, events_from, make_batch, presets
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,10 +32,52 @@ DATASETS, UPLOADS, ARTIFACTS, WEB = ROOT / "datasets", ROOT / "uploads", ROOT / 
 UPLOADS.mkdir(exist_ok=True)
 ARTIFACTS.mkdir(exist_ok=True)
 
-app = FastAPI(title="Invariant Sentinel", docs_url="/api/docs")
+LOG = logging.getLogger("sentinel")
+if not LOG.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
+    LOG.addHandler(_handler)
+    LOG.setLevel(logging.INFO)
+    LOG.propagate = False
+
 PROFILES: dict = {}
 RUNS: dict = {}
 BUILD_LOCK = threading.Lock()
+
+
+def warm_up() -> None:
+    """Load the default dataset (and retrain its model if scikit-learn changed) before the browser asks."""
+    t0 = time.perf_counter()
+    names = list(config_paths())
+    name = "diamonds" if "diamonds" in names else (names[0] if names else None)
+    if name is None:
+        return
+    try:
+        p = get_profile(name)
+        analyse(p, make_batch(p, 0, []), 0)  # the first analysis pays for lazy imports and caches
+        LOG.info("Warm-up of %s done in %.2fs", name, time.perf_counter() - t0)
+    except Exception as e:  # a dataset that is not set up yet is fine: the browser will build it
+        LOG.info("Warm-up of %s skipped: %s", name, getattr(e, "detail", e))
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    threading.Thread(target=warm_up, name="warm-up", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Invariant Sentinel", docs_url="/api/docs", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.middleware("http")
+async def timing(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        LOG.info("%s %s -> %s in %.0f ms", request.method, request.url.path, response.status_code,
+                 (time.perf_counter() - t0) * 1000)
+    return response
 
 
 def clean(obj):
@@ -65,31 +112,44 @@ def config_paths() -> dict:
     return found
 
 
+_CONFIGS: dict = {}  # path -> (modification time, config): settings files are re-read only when they change
+
+
+def load_config(path: Path) -> DatasetConfig:
+    mtime = path.stat().st_mtime
+    cached = _CONFIGS.get(path)
+    if cached is None or cached[0] != mtime:
+        cached = _CONFIGS[path] = (mtime, DatasetConfig.load(path))
+    return cached[1]
+
+
 def get_config(name: str) -> DatasetConfig:
     paths = config_paths()
     if name not in paths:
         raise HTTPException(404, f"No dataset called '{name}'.")
-    return DatasetConfig.load(paths[name][0])
+    return load_config(paths[name][0])
 
 
 def get_profile(name: str, build: bool = False):
     if name in PROFILES:
         return PROFILES[name]
-    p = load_profile(ARTIFACTS / name)
-    if p is None and build:
-        with BUILD_LOCK:
-            p = load_profile(ARTIFACTS / name)
-            if p is None:
-                try:
-                    p = build_profile(get_config(name), ROOT)
-                except ValueError as e:
-                    raise HTTPException(400, str(e))
-                save_profile(p, ARTIFACTS / name)
-                (ARTIFACTS / name / "evaluation.json").unlink(missing_ok=True)  # results belong to the old profile
-    if p is None:
-        raise HTTPException(409, "This dataset has not been set up yet.")
-    PROFILES[name] = p
-    return p
+    # one lock for loading and building, so the warm-up thread and the browser never do the work twice
+    with BUILD_LOCK:
+        if name in PROFILES:
+            return PROFILES[name]
+        # a profile from another scikit-learn version only gets its model retrained (seconds)
+        p = load_profile(ARTIFACTS / name, root=ROOT)
+        if p is None and build:
+            try:
+                p = build_profile(get_config(name), ROOT, log=LOG.info)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            save_profile(p, ARTIFACTS / name)
+            (ARTIFACTS / name / "evaluation.json").unlink(missing_ok=True)  # results belong to the old profile
+        if p is None:
+            raise HTTPException(409, "This dataset has not been set up yet.")
+        PROFILES[name] = p
+        return p
 
 
 def name_of(cfg: DatasetConfig, c: str) -> str:
@@ -137,7 +197,7 @@ def profile_summary(p) -> dict:
 def list_datasets():
     out = []
     for name, (path, source) in config_paths().items():
-        cfg = DatasetConfig.load(path)
+        cfg = load_config(path)
         ready = name in PROFILES or (ARTIFACTS / name / "profile.joblib").exists()
         out.append({"name": name, "title": cfg.title, "description": cfg.description, "source": source,
                     "ready": ready, "evaluated": (ARTIFACTS / name / "evaluation.json").exists(), "target": cfg.label(cfg.target),
@@ -149,8 +209,8 @@ def list_datasets():
 def build(name: str, rebuild: bool = False):
     if rebuild:
         PROFILES.pop(name, None)
-        (ARTIFACTS / name / "profile.joblib").unlink(missing_ok=True)
-        (ARTIFACTS / name / "evaluation.json").unlink(missing_ok=True)
+        for file in ("profile.joblib", "model.joblib", "evaluation.json"):
+            (ARTIFACTS / name / file).unlink(missing_ok=True)
     return reply(profile_summary(get_profile(name, build=True)))
 
 
@@ -237,8 +297,8 @@ def save_upload_config(name: str, body: UploadConfig):
                         batch_word=body.batch_word or "batch", description=body.description)
     cfg.save(UPLOADS / f"{name}.json")
     PROFILES.pop(name, None)
-    (ARTIFACTS / name / "profile.joblib").unlink(missing_ok=True)
-    (ARTIFACTS / name / "evaluation.json").unlink(missing_ok=True)
+    for file in ("profile.joblib", "model.joblib", "evaluation.json"):
+        (ARTIFACTS / name / file).unlink(missing_ok=True)
     return build(name)
 
 
@@ -292,7 +352,7 @@ def create_run(body: RunRequest):
     run_id = f"r{len(RUNS) + 1}"
     RUNS[run_id] = {"dataset": body.dataset, "profile": p, "title": title,
                     "events": events_from(events), "batches": int(min(max(batches or 24, 4), 200)),
-                    "results": [], "seed": body.seed}
+                    "results": [], "raw": [], "reports": {}, "seed": body.seed}
     return reply(run_state(run_id))
 
 
@@ -318,7 +378,10 @@ def next_batch(run_id: str, count: int = 1):
         k = len(run["results"])
         if k >= run["batches"]:
             break
-        run["results"].append(analyse(p, make_batch(p, k, run["events"], run["seed"]), k))
+        # keep the raw batch: the affected-rows report needs the exact rows that were analysed
+        raw = make_batch(p, k, run["events"], run["seed"])
+        run["raw"].append(raw)
+        run["results"].append(analyse(p, raw, k))
     return reply(run_state(run_id))
 
 
@@ -328,6 +391,35 @@ def read_batch(run_id: str, index: int):
     if not 0 <= index < len(run["results"]):
         raise HTTPException(404, "That batch has not been analysed yet.")
     return reply(run["results"][index])
+
+
+def row_report(run: dict, index: int) -> dict:
+    if index not in run["reports"]:
+        run["reports"][index] = flag_rows(run["profile"], run["raw"][index], run["results"][index])
+    return run["reports"][index]
+
+
+@app.get("/api/runs/{run_id}/batches/{index}/rows")
+def read_rows(run_id: str, index: int, format: str = "json"):
+    """Affected rows of one batch: recorded vs expected value of the suspect feature, row by row."""
+    run = get_run(run_id)
+    if not 0 <= index < len(run["results"]):
+        raise HTTPException(404, "That batch has not been analysed yet.")
+    report = row_report(run, index)
+    if format == "csv":
+        name = f"{run['dataset']}-{run['profile'].cfg.batch_word}-{index + 1}-rows.csv"
+        return Response(to_csv(report), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    return reply(report)
+
+
+@app.get("/api/runs/{run_id}/incidents")
+def read_incidents(run_id: str):
+    """Consecutive batches with the same verdict and suspect, merged into incidents."""
+    run = get_run(run_id)
+    p = run["profile"]
+    days = [day_summary(p, r, row_report(run, k)) for k, r in enumerate(run["results"])]
+    return reply({"incidents": describe_incidents(p, merge_incidents(days)), "batch_word": p.cfg.batch_word})
 
 
 @app.post("/api/runs/{run_id}/events")
@@ -355,9 +447,20 @@ def truth(run_id: str):
 
 # ---------- static files ----------
 
-app.mount("/static", StaticFiles(directory=WEB), name="static")
+class CachedStatic(StaticFiles):
+    """Vendored files (Plotly, fonts) never change: browsers keep them for a week. Our own JS and CSS
+    are always revalidated (a cheap 304 via the ETag), so edits show up on the next reload."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        vendor = path.replace("\\", "/").startswith("vendor/")
+        response.headers["Cache-Control"] = "public, max-age=604800" if vendor else "no-cache"
+        return response
+
+
+app.mount("/static", CachedStatic(directory=WEB), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "index.html")
+    return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-cache"})

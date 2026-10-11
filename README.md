@@ -28,9 +28,12 @@ python run.py
 The browser opens at <http://127.0.0.1:8000>. Everything runs locally; no internet connection or
 GPU is needed.
 
-The two example datasets come with their learned profiles. If your scikit-learn version differs
-from the one used to build them, the app relearns them automatically the first time
-(about 15 seconds).
+The two example datasets come with their learned profiles and evaluation results. If your
+scikit-learn version differs from the one used to build them, the app retrains only the price/age
+model the first time (about 3 seconds for diamonds, under 1 for abalone). The learned relationships,
+calibrated thresholds and cached evaluation do not depend on that model and are kept. While it starts,
+the server loads the default dataset in the background, and it logs how long each step and each API
+request takes.
 
 Run the tests with `pytest -q`.
 
@@ -44,6 +47,10 @@ Run the tests with `pytest -q`.
 3. From day 14 the length gauge reads 3% high. Sentinel turns **red** and names Length. The
    points are pushed **off** the line; *Why this feature* shows the observed pattern matching
    Length's fingerprint; *Does the model care?* shows the effect on predicted prices.
+   *Affected rows* lists every stone's recorded length next to the length its weight and width
+   imply ("153 of 200 rows flagged; about 2 expected on healthy days"), with a CSV download. The
+   *Incidents* strip under the timeline merges the run into "harmless shift, days 6–13" and
+   "Length about 3% high, days 14–24".
 4. Press **Reveal what was injected**: the ground truth lines up with the verdicts.
 5. Optional: open *Change something while it runs* and inject your own fault, or switch the
    width to centimetres to see a purple **data quality** verdict.
@@ -52,8 +59,8 @@ Run the tests with `pytest -q`.
 
 | Page | What it shows |
 |---|---|
-| Monitor | Run a scenario batch by batch. Timeline of verdicts next to a standard drift check; full investigation of any batch |
-| Relationships | The rules learned from healthy data, which faults can and cannot be told apart, and every threshold with its source |
+| Monitor | Run a scenario batch by batch. Timeline of verdicts next to a standard drift check, and incidents (consecutive batches with the same verdict and suspect, merged); full investigation of any batch, including the affected rows |
+| Relationships | The rules learned from healthy data, which faults can and cannot be told apart, and every threshold with its source (including the per-row limit) |
 | Evaluation | Sentinel vs. the standard check on 30 simulated batches per situation, with 95% confidence intervals |
 | Your data | Switch datasets, or upload any CSV and choose which columns to monitor |
 
@@ -84,14 +91,24 @@ sentinel/            the method (no web code)
   model.py           the model being protected (gradient-boosted trees)
   profile.py         builds everything from healthy data and calibrates thresholds
   diagnose.py        one batch: checks -> verdict -> plain-language explanation
+  rows.py            affected-rows report for one batch, and merging batches into incidents
   scenarios.py       simulated batches, harmless shifts and injected faults
   evaluate.py        repeatable comparison with the standard drift check
 server/app.py        FastAPI: JSON API + serves the web page
 web/                 plain HTML, CSS and JavaScript with Plotly (all files local)
 datasets/            example CSVs and their settings
-artifacts/           learned profiles and cached evaluation results
+artifacts/           learned profiles (profile.joblib + model.joblib) and cached evaluation results
 tests/               pytest
 docs/HOW_IT_WORKS.md plain-language explanation of the method and likely viva questions
 ```
 
-API documentation is served at <http://127.0.0.1:8000/api/docs> while the app runs.
+API documentation is served at <http://127.0.0.1:8000/api/docs> while the app runs. The main endpoints:
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/datasets` | datasets, and whether each is set up and evaluated |
+| `GET /api/datasets/{name}/profile` | what was learned: rules, fingerprint similarity, thresholds |
+| `POST /api/runs`, `POST /api/runs/{id}/next` | start a scenario, analyse the next batch(es) |
+| `GET /api/runs/{id}/batches/{i}` | the full investigation of one batch |
+| `GET /api/runs/{id}/batches/{i}/rows` | affected rows of one batch as JSON; add `?format=csv` for a CSV download |
+| `GET /api/runs/{id}/incidents` | consecutive batches with the same verdict and suspect, merged: start, end, suspect, estimated size, impact, rows flagged |
