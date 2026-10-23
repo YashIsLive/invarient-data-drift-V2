@@ -16,6 +16,9 @@ points to the faulty feature, like a fingerprint.
 For every batch of data it answers five questions: **what happened, where, why this feature,
 how strong is the evidence, and what to check.**
 
+The [pipeline workflow and plain-language explanation](docs/HOW_IT_WORKS.md#pipeline-at-a-glance)
+show how data setup, batch checks, verdicts, and evaluation fit together.
+
 ## Run it
 
 Requires Python 3.10 or newer.

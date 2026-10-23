@@ -29,6 +29,25 @@ const CONFIG = {
     "hoverClosestCartesian", "hoverCompareCartesian"],
 };
 
+let plotlyPromise;
+
+function loadPlotly() {
+  if (window.Plotly) return Promise.resolve(window.Plotly);
+  if (!plotlyPromise) {
+    plotlyPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/static/vendor/plotly.min.js";
+      script.onload = () => resolve(window.Plotly);
+      script.onerror = () => {
+        plotlyPromise = null;
+        reject(new Error("Could not load the chart library."));
+      };
+      document.head.append(script);
+    });
+  }
+  return plotlyPromise;
+}
+
 function merge(base, extra) {
   const out = { ...base };
   for (const [k, v] of Object.entries(extra || {})) {
@@ -48,6 +67,7 @@ function merge(base, extra) {
  */
 export async function drawChart(el, traces, layout = {}, { interactive = true } = {}) {
   if (!el) return;
+  await loadPlotly();
   Plotly.purge(el);
   const fullLayout = merge(BASE_LAYOUT, layout);
   if (!interactive) {
@@ -85,9 +105,15 @@ export async function drawChart(el, traces, layout = {}, { interactive = true } 
 }
 
 export function resizeCharts(root) {
+  if (!window.Plotly) return;
   root.querySelectorAll(".js-plotly-plot").forEach((el) => {
     if (el.offsetParent !== null) Plotly.Plots.resize(el);
   });
+}
+
+export function purgeChart(el) {
+  if (window.Plotly) Plotly.purge(el);
+  else el.innerHTML = "";
 }
 
 /*

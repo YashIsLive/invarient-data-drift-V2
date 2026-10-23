@@ -159,6 +159,12 @@ select, input[type="number"], input[type="text"] {
 .p-what { grid-area: what; } .p-where { grid-area: where; } .p-why { grid-area: why; }
 .p-scatter { grid-area: scatter; } .p-strength { grid-area: strength; } .p-drift { grid-area: drift; }
 .p-impact { grid-area: impact; } .p-check { grid-area: check; }
+.row-panel { margin-top: 1rem; }
+.record-table-scroll { max-height: 28rem; }
+.record-table { width: max-content !important; min-width: 100%; }
+.record-table thead { position: sticky; top: 0; z-index: 1; background: var(--sheet); }
+.record-table th.focus, .record-table td.focus { color: var(--v-broken); font-weight: 600; }
+.record-table td.missing { color: var(--v-quality); }
 .prose { font-family: var(--serif); font-size: 1.02rem; line-height: 1.6; max-width: 68ch; }
 .prose p { margin-bottom: 0.7em; }
 .notes { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px dashed var(--rule); font-size: var(--step--1); color: var(--muted); }

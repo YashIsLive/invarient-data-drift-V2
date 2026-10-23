@@ -327,7 +327,18 @@ def read_batch(run_id: str, index: int):
     run = get_run(run_id)
     if not 0 <= index < len(run["results"]):
         raise HTTPException(404, "That batch has not been analysed yet.")
-    return reply(run["results"][index])
+    p = run["profile"]
+    cfg = p.cfg
+    columns = list(dict.fromkeys([*cfg.monitored, cfg.target]))
+    batch = make_batch(p, index, run["events"], run["seed"])
+    result = {
+        **run["results"][index],
+        "record_columns": [{"name": c, "label": cfg.label(c), "unit": cfg.unit(c), "target": c == cfg.target}
+                           for c in columns],
+        "records": [{"index": i + 1, "values": [row[c] for c in columns]}
+                    for i, (_, row) in enumerate(batch[columns].iterrows())],
+    }
+    return reply(result)
 
 
 @app.post("/api/runs/{run_id}/events")

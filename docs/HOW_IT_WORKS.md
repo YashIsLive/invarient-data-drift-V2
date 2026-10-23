@@ -3,6 +3,45 @@
 This explains the whole method in plain language, with the few formulas that matter, then lists
 the questions an examiner is likely to ask. Numbers are from the diamonds example.
 
+## Pipeline at a glance
+
+```mermaid
+flowchart TD
+  A[CSV and dataset settings] --> B[Split rows: 50% learn, 20% calibrate, 30% replay]
+  B --> C[Clean learning and calibration rows]
+  C --> D[Learn feature relationships and train the model]
+  C --> E[Calibrate limits on healthy batches]
+  D --> F[Save reusable profile]
+  E --> F
+  B --> G[Take next replay batch]
+  G --> H[Apply selected scenario shift or fault]
+  H --> I[Check data quality]
+  I --> J{Enough valid data?}
+  J -- No --> K[Not enough data]
+  J -- Yes --> L{Quality issue?}
+  L -- Yes --> M[Data quality verdict]
+  L -- No --> N[Run drift and relationship checks]
+  N --> O{Relationships broken?}
+  O -- Yes --> P[Match fault fingerprint]
+  P --> Q[Broken or unclear verdict]
+  O -- No --> R{Feature values moved?}
+  R -- Yes --> S[Harmless shift verdict]
+  R -- No --> T[All normal verdict]
+  K --> U[Show investigation and batch records in Monitor]
+  M --> U
+  Q --> V[Estimate model impact when a feature is localized]
+  V --> U
+  S --> U
+  T --> U
+  F --> W[Optional Evaluation tab]
+  W --> X[Repeat scenarios and compare Sentinel with the KS baseline]
+```
+
+In short: setup learns a healthy reference once; each replay batch is checked against it and
+gets a verdict. Open a batch in **Monitor** to see the explanation, charts, and the batch's rows.
+The optional **Evaluation** tab repeats scenarios and compares Sentinel with the standard drift
+check.
+
 ## 1. The problem in one example
 
 A diamond wholesaler has a model that suggests a price for each stone from its weight, length,

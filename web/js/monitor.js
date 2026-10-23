@@ -1,6 +1,6 @@
 // Monitor page: run a scenario batch by batch and investigate any batch.
 import { api, esc, num, pct, capital } from "./api.js";
-import { COLORS, drawChart, drawMap } from "./charts.js";
+import { COLORS, drawChart, drawMap, purgeChart } from "./charts.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -214,7 +214,7 @@ function onTimelineKey(e) {
 function renderErrorChart() {
   const run = state.run;
   const el = $("err-chart");
-  if (!run.timeline.length) { Plotly.purge(el); el.innerHTML = ""; return; }
+  if (!run.timeline.length) { purgeChart(el); return; }
   const x = run.timeline.map((r) => r.index + 1);
   const ref = run.timeline[0].mae_ref;
   drawChart(el, [
@@ -312,6 +312,28 @@ function renderInvestigation(ev, keepFeature) {
   renderDrift(ev);
   renderImpact(ev);
   renderChecks(ev);
+  renderBatchRows(ev);
+}
+
+function renderBatchRows(ev) {
+  const columns = ev.record_columns || [];
+  const records = ev.records || [];
+  const implicated = new Set([
+    ...ev.issues.map((issue) => issue.feature),
+    ev.suspect,
+    ...ev.candidates.map((candidate) => candidate.feature),
+  ].filter(Boolean));
+  const format = (value) => value === null || value === undefined
+    ? "Missing"
+    : typeof value === "number" ? String(Number(value.toPrecision(7))) : String(value);
+  const header = columns.map((column) => {
+    const label = `${column.label}${column.unit ? ` (${column.unit})` : ""}${column.target ? " · target" : ""}`;
+    return `<th class="${implicated.has(column.name) ? "focus" : ""}">${esc(label)}</th>`;
+  }).join("");
+  const rows = records.map((record) => `<tr><th scope="row">${record.index}</th>${record.values.map((value, i) =>
+    `<td class="${implicated.has(columns[i].name) ? "focus" : ""}${value === null ? " missing" : ""}">${esc(format(value))}</td>`).join("")}</tr>`).join("");
+  $("batch-rows").innerHTML = `<p class="small muted">${records.length} rows</p><table class="data record-table">
+    <thead><tr><th>Row</th>${header}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderMap(ev) {
